@@ -107,23 +107,40 @@ def download_history(ticker):
         return None
 
 # =========================================================
-# SIGNAL LOGIC (VERSION FINALE)
+# SIGNAL LOGIC (VERSION FINALE STABLE)
 # =========================================================
 def compute_signals(df):
 
+    # Minimum data
     if df is None or len(df) < 80:
         return None
+
+    # Yahoo sometimes returns malformed structures
+    required_cols = ["Close", "High", "Low"]
+    for col in required_cols:
+        if col not in df.columns:
+            return None
+        if not isinstance(df[col], pd.Series):
+            return None
+        if df[col].isna().all():
+            return None
 
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
 
+    # Indicators
     rsi14 = rsi(close, 14)
     wr = williams_r(high, low, close, 14)
     tenkan, kijun, spanA, spanB = ichimoku(df)
 
+    # Ensure indicators are Series
+    for s in [tenkan, kijun, spanA, spanB, rsi14, wr]:
+        if not isinstance(s, pd.Series):
+            return None
+
     # ============================================
-    # CORRECTION FINALE : FORCE SERIES ALIGNMENT
+    # FORCE INDEX ALIGNMENT (fixes all remaining errors)
     # ============================================
     tenkan = tenkan.reindex(close.index)
     kijun = kijun.reindex(close.index)
@@ -132,6 +149,7 @@ def compute_signals(df):
     rsi14 = rsi14.reindex(close.index)
     wr = wr.reindex(close.index)
 
+    # Build DataFrame safely
     df2 = pd.DataFrame({
         "close": close,
         "high": high,
@@ -147,6 +165,7 @@ def compute_signals(df):
     if len(df2) < 2:
         return None
 
+    # Extract aligned series
     close = df2["close"]
     tenkan = df2["tenkan"]
     kijun = df2["kijun"]
@@ -163,7 +182,7 @@ def compute_signals(df):
     bull_tk = tenkan > kijun
     bear_tk = tenkan < kijun
 
-    # Extraction scalaires
+    # Scalar extraction
     try:
         r = float(rsi14.iloc[-1])
         w = float(wr.iloc[-1])
@@ -173,7 +192,7 @@ def compute_signals(df):
     if math.isnan(r) or math.isnan(w):
         return None
 
-    # BUY / SELL
+    # BUY logic
     buy = (
         above_cloud.iloc[-1] and
         bull_tk.iloc[-1] and
@@ -181,6 +200,7 @@ def compute_signals(df):
         w > -80
     )
 
+    # SELL logic
     sell = (
         below_cloud.iloc[-1] and
         bear_tk.iloc[-1] and
@@ -188,7 +208,7 @@ def compute_signals(df):
         w < -20
     )
 
-    # BUYNEW / SELLNEW
+    # NEW SIGNALS
     buy_prev = (
         above_cloud.iloc[-2] and
         bull_tk.iloc[-2] and
@@ -215,7 +235,6 @@ def compute_signals(df):
         "RSI": r,
         "WR": w
     }
-
 
 # =========================================================
 # SCAN BUTTON
