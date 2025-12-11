@@ -47,12 +47,11 @@ def convert_to_yahoo(symbol: str) -> str:
         base = s.replace(".UN", "")
         return f"{base}-UN.TO"
 
-    # CTC.A → CTC-A.TO
+    # CTC.A → CTC-A.TO (et toutes les variantes .A, .B, etc.)
     if "." in s:
         base, suffix = s.split(".", 1)
         return f"{base}-{suffix}.TO"
 
-    # Normal ticker
     return f"{s}.TO"
 
 tsx_df["Yahoo"] = tsx_df["Symbol"].apply(convert_to_yahoo)
@@ -123,7 +122,16 @@ def compute_signals(df):
     wr = williams_r(high, low, close, 14)
     tenkan, kijun, spanA, spanB = ichimoku(df)
 
-    # ALIGNEMENT COMPLET (corrige l’erreur ValueError)
+    # ============================================
+    # CORRECTION FINALE : FORCE SERIES ALIGNMENT
+    # ============================================
+    tenkan = tenkan.reindex(close.index)
+    kijun = kijun.reindex(close.index)
+    spanA = spanA.reindex(close.index)
+    spanB = spanB.reindex(close.index)
+    rsi14 = rsi14.reindex(close.index)
+    wr = wr.reindex(close.index)
+
     df2 = pd.DataFrame({
         "close": close,
         "high": high,
@@ -165,7 +173,7 @@ def compute_signals(df):
     if math.isnan(r) or math.isnan(w):
         return None
 
-    # Buy / Sell Signals
+    # BUY / SELL
     buy = (
         above_cloud.iloc[-1] and
         bull_tk.iloc[-1] and
@@ -180,7 +188,7 @@ def compute_signals(df):
         w < -20
     )
 
-    # New Signals
+    # BUYNEW / SELLNEW
     buy_prev = (
         above_cloud.iloc[-2] and
         bull_tk.iloc[-2] and
@@ -207,6 +215,7 @@ def compute_signals(df):
         "RSI": r,
         "WR": w
     }
+
 
 # =========================================================
 # SCAN BUTTON
