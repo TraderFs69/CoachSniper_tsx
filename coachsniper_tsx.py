@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import datetime as dt
 import math
 import os
 
@@ -31,7 +30,6 @@ def get_tsx_constituents():
     df = df.rename(columns={"symbol": "Symbol"})
     df["Symbol"] = df["Symbol"].astype(str).str.strip()
 
-    # Nettoyage minimal
     df = df[df["Symbol"] != ""]
 
     return df, df["Symbol"].tolist()
@@ -39,24 +37,22 @@ def get_tsx_constituents():
 tsx_df, raw_symbols = get_tsx_constituents()
 
 # =========================================================
-# CONVERSION SYMBOLS → YAHOO FINANCE (.TO)
-# TSX uniquement, pas TSXV
+# CONVERT TSX SYMBOL → YAHOO FINANCE FORMAT
 # =========================================================
 def convert_to_yahoo(symbol: str) -> str:
-    """Convertit un ticker TSX en format Yahoo Finance."""
     s = symbol.upper().strip()
 
-    # Gestion .UN → -UN.TO
+    # AP.UN → AP-UN.TO
     if ".UN" in s:
         base = s.replace(".UN", "")
         return f"{base}-UN.TO"
 
-    # Gestion .U, .K, etc : CTC.A → CTC-A.TO
+    # CTC.A → CTC-A.TO
     if "." in s:
         base, suffix = s.split(".", 1)
         return f"{base}-{suffix}.TO"
 
-    # Cas normal
+    # Normal ticker
     return f"{s}.TO"
 
 tsx_df["Yahoo"] = tsx_df["Symbol"].apply(convert_to_yahoo)
@@ -79,14 +75,12 @@ def rsi(series, length=14):
     avg_loss = loss.rolling(length).mean().replace(0, 1e-9)
 
     rs = avg_gain / avg_loss
-    out = 100 - 100 / (1 + rs)
-    return out
+    return 100 - 100 / (1 + rs)
 
 def williams_r(high, low, close, length=14):
     hh = high.rolling(length).max()
     ll = low.rolling(length).min()
-    wr = -100 * (hh - close) / (hh - ll).replace(0, 1e-9)
-    return wr
+    return -100 * (hh - close) / (hh - ll).replace(0, 1e-9)
 
 def ichimoku(df):
     high = df["High"]
@@ -100,7 +94,7 @@ def ichimoku(df):
     return tenkan, kijun, spanA, spanB
 
 # =========================================================
-# DOWNLOAD DATA YAHOO
+# DOWNLOAD YAHOO DATA
 # =========================================================
 @st.cache_data(ttl=3600)
 def download_history(ticker):
@@ -114,7 +108,7 @@ def download_history(ticker):
         return None
 
 # =========================================================
-# LOGIC BUY/SELL
+# SIGNAL LOGIC (VERSION FINALE)
 # =========================================================
 def compute_signals(df):
 
@@ -127,50 +121,51 @@ def compute_signals(df):
 
     rsi14 = rsi(close, 14)
     wr = williams_r(high, low, close, 14)
-
     tenkan, kijun, spanA, spanB = ichimoku(df)
 
-    # Cloud
+    # ALIGNEMENT COMPLET (corrige l’erreur ValueError)
+    df2 = pd.DataFrame({
+        "close": close,
+        "high": high,
+        "low": low,
+        "tenkan": tenkan,
+        "kijun": kijun,
+        "spanA": spanA,
+        "spanB": spanB,
+        "rsi": rsi14,
+        "wr": wr
+    }).dropna()
+
+    if len(df2) < 2:
+        return None
+
+    close = df2["close"]
+    tenkan = df2["tenkan"]
+    kijun = df2["kijun"]
+    spanA = df2["spanA"]
+    spanB = df2["spanB"]
+    rsi14 = df2["rsi"]
+    wr = df2["wr"]
+
     upper_cloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
     lower_cloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
 
-   # Rendre les index compatibles (important pour éviter l'erreur)
-df2 = pd.DataFrame({
-    "close": close,
-    "tenkan": tenkan,
-    "kijun": kijun,
-    "spanA": spanA,
-    "spanB": spanB
-}).dropna()
+    above_cloud = close > upper_cloud
+    below_cloud = close < lower_cloud
+    bull_tk = tenkan > kijun
+    bear_tk = tenkan < kijun
 
-if len(df2) < 2:
-    return None
-
-close = df2["close"]
-tenkan = df2["tenkan"]
-kijun = df2["kijun"]
-spanA = df2["spanA"]
-spanB = df2["spanB"]
-
-upper_cloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
-lower_cloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
-
-above_cloud = close > upper_cloud
-below_cloud = close < lower_cloud
-bull_tk = tenkan > kijun
-bear_tk = tenkan < kijun
-
-    # Extraction scalaires sécurisés
+    # Extraction scalaires
     try:
         r = float(rsi14.iloc[-1])
         w = float(wr.iloc[-1])
-    except:
+    except Exception:
         return None
 
     if math.isnan(r) or math.isnan(w):
         return None
 
-    # Conditions BUY
+    # Buy / Sell Signals
     buy = (
         above_cloud.iloc[-1] and
         bull_tk.iloc[-1] and
@@ -178,7 +173,6 @@ bear_tk = tenkan < kijun
         w > -80
     )
 
-    # Conditions SELL
     sell = (
         below_cloud.iloc[-1] and
         bear_tk.iloc[-1] and
@@ -186,20 +180,23 @@ bear_tk = tenkan < kijun
         w < -20
     )
 
-    # NEW SIGNALS
-    buy_new = False
-    sell_new = False
+    # New Signals
+    buy_prev = (
+        above_cloud.iloc[-2] and
+        bull_tk.iloc[-2] and
+        float(rsi14.iloc[-2]) > 50 and
+        float(wr.iloc[-2]) > -80
+    )
 
-    if len(close) >= 2:
-        buy_new = buy and not (
-            above_cloud.iloc[-2] and bull_tk.iloc[-2] and
-            float(rsi14.iloc[-2]) > 50 and float(wr.iloc[-2]) > -80
-        )
+    sell_prev = (
+        below_cloud.iloc[-2] and
+        bear_tk.iloc[-2] and
+        float(rsi14.iloc[-2]) < 50 and
+        float(wr.iloc[-2]) < -20
+    )
 
-        sell_new = sell and not (
-            below_cloud.iloc[-2] and bear_tk.iloc[-2] and
-            float(rsi14.iloc[-2]) < 50 and float(wr.iloc[-2]) < -20
-        )
+    buy_new = buy and not buy_prev
+    sell_new = sell and not sell_prev
 
     return {
         "Buy": buy,
@@ -212,7 +209,7 @@ bear_tk = tenkan < kijun
     }
 
 # =========================================================
-# UI – SCAN BUTTON
+# SCAN BUTTON
 # =========================================================
 if st.button("🚀 Lancer le scan TSX"):
     st.write("Téléchargement des données…")
