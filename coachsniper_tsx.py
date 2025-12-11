@@ -2,223 +2,224 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import math
-import os
+
+st.set_page_config(page_title="Coach Sniper – TSX", layout="wide")
+st.title("📈 Coach Sniper – TSX Scanner")
 
 # ---------------------------------------------------------
-# STREAMLIT CONFIG
+# STRATÉGIE MODE (GLOBAL)
 # ---------------------------------------------------------
-st.set_page_config(page_title="Coach Sniper TSX Scanner", layout="wide")
-st.title("🏒 Coach Sniper – TSX Composite Scanner (ANTI-FAIL VERSION)")
+st.sidebar.header("Stratégie")
+strategy_mode = st.sidebar.selectbox(
+    "Mode stratégie",
+    ["Strict", "Balanced", "Balanced Permissif"]
+)
 
 # ---------------------------------------------------------
-# LOAD CONSTITUENTS
+# LECTURE DU FICHIER TSX
 # ---------------------------------------------------------
-@st.cache_data(ttl=3600)
-def load_tsx():
-    file = "tsxcomposite_constituents.xlsx"
-    if not os.path.exists(file):
-        st.error("Fichier tsxcomposite_constituents.xlsx introuvable.")
+@st.cache_data
+def load_tsx_list():
+    df = pd.read_excel("tsxcomposite_constituents.xlsx")
+    df.columns = df.columns.str.lower()
+
+    # Chercher colonne de symboles
+    symbol_col = None
+    for c in ["symbol", "ticker", "security"]:
+        if c in df.columns:
+            symbol_col = c
+            break
+
+    if symbol_col is None:
+        st.error("❌ Impossible de trouver une colonne 'Symbol', 'Ticker' ou 'Security'.")
         st.stop()
 
-    df = pd.read_excel(file)
-    df.columns = [c.lower().strip() for c in df.columns]
+    df["symbol"] = df[symbol_col].astype(str).str.strip()
 
-    if "symbol" not in df.columns:
-        st.error(f"Colonne 'Symbol' absente. Colonnes trouvées : {df.columns.tolist()}")
-        st.stop()
+    # Conversion vers Yahoo
+    def convert_to_yahoo(symbol):
+        s = symbol.upper().replace(" ", "")
 
-    df["symbol"] = df["symbol"].astype(str).str.strip()
-    df = df[df["symbol"] != ""]
+        # UNITÉS : X.UN → X-UN.TO
+        if ".UN" in s:
+            b = s.replace(".UN", "")
+            return f"{b}-UN.TO"
 
+        # CLASSES : CTC.A → CTC-A.TO
+        if "." in s:
+            a, b = s.split(".")
+            return f"{a}-{b}.TO"
+
+        # Normal : RY, SHOP → RY.TO
+        return f"{s}.TO"
+
+    df["yahoo"] = df["symbol"].apply(convert_to_yahoo)
     return df
 
-tsx_df = load_tsx()
-
-# ---------------------------------------------------------
-# TICKER CONVERSION (AP.UN → AP-UN.TO, CTC.A → CTC-A.TO)
-# ---------------------------------------------------------
-def convert_to_yahoo(symbol: str) -> str:
-    s = symbol.upper().strip()
-
-    if ".UN" in s:
-        base = s.replace(".UN", "")
-        return f"{base}-UN.TO"
-
-    if "." in s:
-        base, suf = s.split(".", 1)
-        return f"{base}-{suf}.TO"
-
-    return f"{s}.TO"
-
-tsx_df["yahoo"] = tsx_df["symbol"].apply(convert_to_yahoo)
+tsx_df = load_tsx_list()
 tickers = tsx_df["yahoo"].tolist()
 
-st.sidebar.write(f"📊 Tickers TSX détectés : {len(tickers)}")
+st.write(f"Tickers TSX chargés : {len(tickers)}")
+
 
 # ---------------------------------------------------------
-# YAHOO DOWNLOAD (ANTI-FAIL)
+# FONCTIONS INDICATEURS
 # ---------------------------------------------------------
-def normalize_columns(df):
-    rename_map = {}
+def ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
 
-    for c in df.columns:
-        lc = c.lower()
+def rsi(series, length=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/length).mean()
+    avg_loss = loss.ewm(alpha=1/length).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - 100/(1+rs)
 
-        if "close" in lc and "adj" not in lc:
-            rename_map[c] = "Close"
-        elif "adj" in lc and "close" in lc:
-            rename_map[c] = "Close"
-        elif "high" in lc:
-            rename_map[c] = "High"
-        elif "low" in lc:
-            rename_map[c] = "Low"
+def williams_r(high, low, close, length=14):
+    highest = high.rolling(length).max()
+    lowest  = low.rolling(length).min()
+    return -100 * (highest - close) / (highest - lowest)
 
-    df = df.rename(columns=rename_map)
-
-    required = ["Close", "High", "Low"]
-    for r in required:
-        if r not in df.columns:
-            return None
-
-    return df
-
-
-@st.cache_data(ttl=3600)
-def get_history(ticker):
-    try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
-        if df is None or df.empty:
-            return None
-
-        df = df.reset_index(drop=True)
-        df = normalize_columns(df)
-
-        return df
-    except Exception:
-        return None
-
-# ---------------------------------------------------------
-# INDICATORS
-# ---------------------------------------------------------
-def ema(s, l):
-    return s.ewm(span=l, adjust=False).mean()
-
-def rsi(s, l=14):
-    d = s.diff()
-    up = d.clip(lower=0)
-    down = (-d).clip(lower=0)
-    avg_up = up.rolling(l).mean()
-    avg_down = down.rolling(l).mean().replace(0, 1e-9)
-    rs = avg_up / avg_down
-    return 100 - 100 / (1 + rs)
-
-def wr(high, low, close, l=14):
-    hh = high.rolling(l).max()
-    ll = low.rolling(l).min()
-    return -100 * (hh - close) / (hh - ll).replace(0, 1e-9)
-
-def ichimoku(df):
-    high = df["High"]
-    low = df["Low"]
-
+def ichimoku(high, low):
     tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2
     kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2
     spanA = ((tenkan + kijun) / 2).shift(26)
     spanB = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
-
     return tenkan, kijun, spanA, spanB
 
+
 # ---------------------------------------------------------
-# SIGNAL ENGINE (ANTI-FAIL LOGIC)
+# TÉLÉCHARGEMENT YAHOO
+# ---------------------------------------------------------
+def get_history(ticker):
+    try:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        if df.empty:
+            return None
+
+        df = df.rename(columns=str.title)
+        for col in ["Open","High","Low","Close","Volume"]:
+            if col not in df.columns:
+                return None
+
+        return df
+    except:
+        return None
+
+
+# ---------------------------------------------------------
+# COMPUTE SIGNALS — VERSION ANTI-FAIL + MODE PERMISSIF
 # ---------------------------------------------------------
 def compute_signals(df):
-    if df is None or len(df) < 80:
+
+    if df is None or len(df) < 120:
         return None
+
+    df = df.copy()
 
     close = df["Close"]
-    high = df["High"]
-    low = df["Low"]
+    high  = df["High"]
+    low   = df["Low"]
 
-    # Indicators ALWAYS align on df.index
-    r = rsi(close).reindex(df.index)
-    w = wr(high, low, close).reindex(df.index)
-    tenkan, kijun, spanA, spanB = ichimoku(df)
-    tenkan = tenkan.reindex(df.index)
-    kijun = kijun.reindex(df.index)
-    spanA = spanA.reindex(df.index)
-    spanB = spanB.reindex(df.index)
+    # Ichimoku
+    tenkan, kijun, spanA, spanB = ichimoku(high, low)
 
-    # Cloud
-    upper = pd.concat([spanA, spanB], axis=1).max(axis=1)
-    lower = pd.concat([spanA, spanB], axis=1).min(axis=1)
+    # Alignement anti-fail
+    for x in [tenkan, kijun, spanA, spanB]:
+        x.fillna(method="bfill", inplace=True)
+        x.fillna(method="ffill", inplace=True)
 
-    # Latest values (skip safely)
-    try:
-        c0 = float(close.iloc[-1])
-        t0 = float(tenkan.iloc[-1])
-        k0 = float(kijun.iloc[-1])
-        u0 = float(upper.iloc[-1])
-        l0 = float(lower.iloc[-1])
-        r0 = float(r.iloc[-1])
-        w0 = float(w.iloc[-1])
-    except:
-        return None
+    # RSI & WR
+    r = rsi(close)
+    wr = williams_r(high, low, close)
 
-    # Avoid NaN issues
-    if any(math.isnan(x) for x in [c0, t0, k0, u0, l0, r0, w0]):
-        return None
+    # Volume oscillator
+    vo = ema(df["Volume"], 5) - ema(df["Volume"], 20)
 
-    # Conditions
-    above = c0 > u0
-    below = c0 < l0
-    bull_tk = t0 > k0
-    bear_tk = t0 < k0
+    # Remplissage NaN pour éviter crash
+    r = r.fillna(50)
+    wr = wr.fillna(-50)
+    vo = vo.fillna(0)
 
-    # Previous
-    try:
-        above_prev = float(close.iloc[-2]) > float(upper.iloc[-2])
-        below_prev = float(close.iloc[-2]) < float(lower.iloc[-2])
-        bull_prev = float(tenkan.iloc[-2]) > float(kijun.iloc[-2])
-        bear_prev = float(tenkan.iloc[-2]) < float(kijun.iloc[-2])
-        r_prev = float(r.iloc[-2])
-        w_prev = float(w.iloc[-2])
-    except:
-        return None
+    # ==========================================================
+    # MODE STRICT
+    # ==========================================================
+    if strategy_mode == "Strict":
+        buy = (close > spanA) & (tenkan > kijun) & (r > 50) & (wr > -80)
+        sell = (close < spanB) & (tenkan < kijun) & (r < 50) & (wr < -20)
 
-    # Signals
-    buy = above and bull_tk and r0 > 50 and w0 > -80
-    sell = below and bear_tk and r0 < 50 and w0 < -20
+    # ==========================================================
+    # MODE BALANCED (standard)
+    # ==========================================================
+    elif strategy_mode == "Balanced":
+        buy = (close > kijun) & (r > 48) & (wr > -85)
+        sell = (close < kijun) & (r < 52) & (wr < -15)
 
-    buy_new = buy and not (above_prev and bull_prev and r_prev > 50 and w_prev > -80)
-    sell_new = sell and not (below_prev and bear_prev and r_prev < 50 and w_prev < -20)
+    # ==========================================================
+    # MODE BALANCED PERMISSIF (NOUVEAU)
+    # ==========================================================
+    else:  # Balanced Permissif
+        trend_long  = (close > kijun) & ((tenkan >= kijun) | (spanA > spanB))
+        trend_short = (close < kijun) & ((tenkan <= kijun) | (spanA < spanB))
+
+        rsi_long  = r > 45
+        rsi_short = r < 55
+
+        wr_long  = wr > -88
+        wr_short = wr < -12
+
+        vo_long  = vo > -5
+        vo_short = vo < 5
+
+        buy = trend_long & rsi_long & wr_long & vo_long
+        sell = trend_short & rsi_short & wr_short & vo_short
+
+    # Nouveaux signaux
+    buy_new = buy & (~buy.shift(1).fillna(False))
+    sell_new = sell & (~sell.shift(1).fillna(False))
 
     return {
-        "Close": c0,
-        "Buy": buy,
-        "Sell": sell,
-        "BuyNew": buy_new,
-        "SellNew": sell_new,
-        "RSI": r0,
-        "WR": w0
+        "Close": float(close.iloc[-1]),
+        "Buy": bool(buy.iloc[-1]),
+        "Sell": bool(sell.iloc[-1]),
+        "BuyNew": bool(buy_new.iloc[-1]),
+        "SellNew": bool(sell_new.iloc[-1]),
+        "RSI": float(r.iloc[-1]),
+        "WR": float(wr.iloc[-1])
     }
 
-# ---------------------------------------------------------
-# RUN SCAN
-# ---------------------------------------------------------
-if st.button("🚀 Lancer le scan (ANTI-FAIL)"):
-    results = []
 
+# ---------------------------------------------------------
+# LANCEMENT DU SCAN
+# ---------------------------------------------------------
+st.subheader("🔍 Résultats du scan TSX")
+
+results = []
+
+if st.button("🚀 Lancer le scan"):
     for i, ticker in enumerate(tickers):
-        st.write(f"{i+1}/{len(tickers)} – {ticker}")
+        st.write(f"{i+1}/{len(tickers)} — {ticker}")
 
         df = get_history(ticker)
         sig = compute_signals(df)
 
-        if sig is None:
-            continue
-
         symbol = tsx_df.loc[tsx_df["yahoo"] == ticker, "symbol"].values[0]
+
+        if sig is None:
+            results.append({
+                "Symbol": symbol,
+                "Yahoo": ticker,
+                "Close": None,
+                "Buy": False,
+                "Sell": False,
+                "BuyNew": False,
+                "SellNew": False,
+                "RSI": None,
+                "WR": None
+            })
+            continue
 
         results.append({
             "Symbol": symbol,
@@ -232,11 +233,7 @@ if st.button("🚀 Lancer le scan (ANTI-FAIL)"):
             "WR": sig["WR"]
         })
 
-    if not results:
-        st.error("❌ Aucun résultat. (Très improbable avec cette version)")
-
     df_res = pd.DataFrame(results)
-    st.subheader("📊 Résultats du scan")
     st.dataframe(df_res, use_container_width=True)
 
     csv = df_res.to_csv(index=False).encode("utf-8")
