@@ -9,94 +9,97 @@ import yfinance as yf
 # ==============================
 # Config Streamlit
 # ==============================
-st.set_page_config(
-    page_title="Coach Sniper – TSX Composite",
-    layout="wide"
-)
+st.set_page_config(page_title="Coach Sniper – TSX", layout="wide")
 st.title("🧭 Coach Sniper – TSX Composite (Yahoo Finance)")
 
 # ==============================
-# Conversion tickers TSX → Yahoo Finance
+# 🔧 Conversion tickers TSX → Yahoo Finance
 # ==============================
 def fix_tsx_ticker(ticker: str) -> str:
     t = ticker.strip().lower()
 
-    if "." not in t:
-        return t.upper() + ".TO"
-
+    # Cas AP.un → AP-UN.TO
     if ".un" in t:
         base = t.split(".")[0].upper()
         return f"{base}-UN.TO"
 
-    return t.upper() + ".TO"
+    # Cas générique : CTC.A → CTC-A.TO
+    if "." in t:
+        base, suffix = t.split(".", 1)
+        return f"{base.upper()}-{suffix.upper()}.TO"
+
+    # Cas simple : RY → RY.TO
+    return f"{t.upper()}.TO"
 
 # ==============================
-# Charger liste TSX avec gestion robuste
+# 🔍 Charger liste TSX + correction automatique colonnes
 # ==============================
 @st.cache_data(show_spinner=True, ttl=3600)
 def get_tsx_constituents():
     path = "tsxcomposite_constituents.xlsx"
     if not os.path.exists(path):
-        st.error(f"❌ Fichier introuvable : {path}")
-        raise FileNotFoundError(path)
+        raise FileNotFoundError(f"{path} introuvable")
 
     df = pd.read_excel(path)
 
-    # === DEBUG affichage pour comprendre ce que Streamlit lit ===
-    st.write("🔍 DEBUG – Colonnes détectées :", df.columns.tolist())
-    st.write("🔍 DEBUG – Aperçu du fichier :")
+    # DEBUG
+    st.write("🔍 Colonnes détectées :", df.columns.tolist())
     st.write(df.head())
 
-    # === Normalisation automatique des colonnes ===
-    # On remplace toutes les colonnes par une version nettoyée
-    normalized_cols = [c.strip().lower() for c in df.columns]
-    df.columns = normalized_cols
+    # Normalisation
+    df.columns = [c.strip().lower() for c in df.columns]
 
-    # Gestion des variantes : symbol, ticker, tickers
-    if "symbol" in df.columns:
-        df.rename(columns={"symbol": "Symbol"}, inplace=True)
-    elif "ticker" in df.columns:
-        df.rename(columns={"ticker": "Symbol"}, inplace=True)
-    elif "tickers" in df.columns:
-        df.rename(columns={"tickers": "Symbol"}, inplace=True)
-    else:
-        st.error("❌ Impossible de trouver la colonne avec les tickers.")
+    # Trouver colonne tickers
+    colmap = {
+        "symbol": "Symbol",
+        "ticker": "Symbol",
+        "tickers": "Symbol",
+        "security": "Symbol"
+    }
+
+    renamed = False
+    for c in df.columns:
+        if c in colmap:
+            df.rename(columns={c: colmap[c]}, inplace=True)
+            renamed = True
+            break
+
+    if not renamed:
+        st.error("Impossible de trouver la colonne contenant les tickers.")
         st.write("Colonnes disponibles :", df.columns.tolist())
-        raise ValueError("Aucune colonne 'Symbol', 'Ticker' ou 'Tickers' trouvée.")
+        raise ValueError("Colonne tickers manquante")
 
-    # On supprime les lignes vides
+    # Nettoyage
     df = df[df["Symbol"].notna()]
-    df = df[df["Symbol"].astype(str).str.strip() != ""]
+    df["Symbol"] = df["Symbol"].astype(str).str.strip()
+    df = df[df["Symbol"] != ""]
 
-    # Ajout Company & Sector si absents
     df["Company"] = df["Symbol"]
     df["Sector"] = "Unknown"
 
-    # Conversion tickers en Yahoo format
-    tickers_yahoo = [fix_tsx_ticker(t) for t in df["Symbol"].tolist()]
-
-    return df, tickers_yahoo
+    tickers = [fix_tsx_ticker(t) for t in df["Symbol"]]
+    return df, tickers
 
 # ==============================
-# Indicateurs (inchangés)
+# 📈 Indicateurs techniques
 # ==============================
-def ema(series: pd.Series, length: int) -> pd.Series:
-    return series.ewm(span=length, adjust=False, min_periods=length).mean()
+def ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
 
-def rsi_wilder(close: pd.Series, length: int = 14) -> pd.Series:
+def rsi_wilder(close, length=14):
     d = close.diff()
-    gain = d.clip(lower=0.0)
-    loss = -d.clip(upper=0.0)
+    gain = d.clip(lower=0)
+    loss = (-d).clip(lower=0)
     avg_gain = gain.ewm(alpha=1/length, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/length, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - 100/(1+rs)
+    return 100 - (100 / (1 + rs))
 
 def crossover(a, b): return (a > b) & (a.shift(1) <= b.shift(1))
 def crossunder(a, b): return (a < b) & (a.shift(1) >= b.shift(1))
 
 def cross_recent(cross, lookback=3):
-    out = cross.copy().astype(bool)
+    out = cross.copy()
     for i in range(1, lookback+1):
         out |= cross.shift(i).fillna(False)
     return out
@@ -117,7 +120,7 @@ def volume_oscillator(volume, fast=5, slow=20):
     return (ema(volume, fast) - ema(volume, slow)) / ema(volume, slow) * 100
 
 # ==============================
-# Heikin Ashi
+# 🔥 Heikin Ashi
 # ==============================
 def to_heikin_ashi(df):
     df = df.copy()
@@ -126,17 +129,17 @@ def to_heikin_ashi(df):
     ha_open.iloc[0] = (df["Open"].iloc[0] + df["Close"].iloc[0]) / 2
     for i in range(1, len(df)):
         ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
-    df["Open"], df["High"], df["Low"], df["Close"] = ha_open, \
-        pd.concat([df["High"], ha_open, ha_close], axis=1).max(axis=1), \
-        pd.concat([df["Low"], ha_open, ha_close], axis=1).min(axis=1), \
-        ha_close
+    df["Open"] = ha_open
+    df["Close"] = ha_close
+    df["High"] = pd.concat([df["High"], ha_open, ha_close], axis=1).max(axis=1)
+    df["Low"]  = pd.concat([df["Low"], ha_open, ha_close], axis=1).min(axis=1)
     return df
 
 # ==============================
-# Télécharger OHLC Yahoo Finance
+# 📥 Télécharger données Yahoo
 # ==============================
 @st.cache_data(show_spinner=True, ttl=3600)
-def download_yahoo(tickers):
+def download_yahoo_bars(tickers):
     out = {}
     failed = []
     end = dt.date.today()
@@ -148,9 +151,12 @@ def download_yahoo(tickers):
             if df.empty:
                 failed.append(t)
                 continue
+
             df = df.rename(columns=str.capitalize)
-            out[t] = df[["Open","High","Low","Close","Volume"]]
-        except:
+            df = df[["Open","High","Low","Close","Volume"]]
+            out[t] = df
+
+        except Exception:
             failed.append(t)
 
         time.sleep(0.15 + random.random()*0.15)
@@ -158,76 +164,84 @@ def download_yahoo(tickers):
     return out, failed
 
 # ==============================
-# UI – Chargement tickers
+# UI – Charger tickers
 # ==============================
-st.subheader("📥 Chargement des constituants TSX")
 tsx_df, tickers_yahoo = get_tsx_constituents()
 
-search = st.text_input("Recherche", "").lower().strip()
+search = st.text_input("Recherche ticker", "").lower().strip()
 if search:
     tsx_df = tsx_df[tsx_df["Symbol"].str.lower().str.contains(search)]
 
-tickers = [fix_tsx_ticker(t) for t in tsx_df["Symbol"].tolist()]
+tickers = [fix_tsx_ticker(t) for t in tsx_df["Symbol"]]
 
-st.write(f"📈 {len(tickers)} tickers à scanner.")
+st.subheader(f"📈 {len(tickers)} tickers à scanner")
 
-mode = st.sidebar.selectbox("Mode stratégie", ["Balanced","Strict","Aggressive"])
+mode = st.sidebar.selectbox("Mode stratégie", ["Balanced", "Strict", "Aggressive"])
 use_rsi50 = st.sidebar.checkbox("Filtre RSI>50", True)
 
 go = st.button("▶️ Scanner")
 if not go:
     st.stop()
 
-bars, failed = download_yahoo(tuple(tickers))
-st.write(f"Valid tickers: {len(bars)}")
+bars, failed = download_yahoo_bars(tuple(tickers))
+st.write(f"Tickers valides : {len(bars)}")
 if failed:
     st.warning(f"Échec : {failed[:10]}")
 
 # ==============================
-# Calcul signaux
+# 🔥 Calcul Signaux
 # ==============================
 results = []
-for symbol in tsx_df["Symbol"]:
-    ysym = fix_tsx_ticker(symbol)
+
+for sym in tsx_df["Symbol"]:
+    ysym = fix_tsx_ticker(sym)
     df = bars.get(ysym)
+
     if df is None or len(df) < 82:
         continue
 
-    data = to_heikin_ashi(df)
+    ha = to_heikin_ashi(df)
 
-    h, l, c, v = data["High"], data["Low"], data["Close"], data["Volume"]
+    h, l, c = ha["High"], ha["Low"], ha["Close"]
+    v = ha["Volume"]
+
+    # === Ichimoku with index alignment FIXED ===
     tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
+
+    c, tenkan = c.align(tenkan, join="inner")
+    c, kijun  = c.align(kijun, join="inner")
+    c, spanA  = c.align(spanA, join="inner")
+    c, spanB  = c.align(spanB, join="inner")
+
     upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
     lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
-
-    rsi14 = rsi_wilder(c)
 
     aboveCloud = c > upperCloud
     belowCloud = c < lowerCloud
     bullTK = tenkan > kijun
     bearTK = tenkan < kijun
 
+    rsi14 = rsi_wilder(c)
     wr = williams_r(h, l, c)
-
-    wr_up_recent = cross_recent(crossover(wr, pd.Series(-80, index=wr.index)), 14)
-    wr_dn_recent = cross_recent(crossunder(wr, pd.Series(-20, index=wr.index)), 14)
-
     vo = volume_oscillator(v)
 
-    if mode == "Strict":
-        buyCond  = aboveCloud & bullTK & (rsi14>50) & wr_up_recent & (vo>0)
-        sellCond = belowCloud & bearTK & (rsi14<50) & wr_dn_recent & (vo<0)
-    else:
-        buyCond  = (c>kijun) & (spanA>spanB) & (rsi14>50 if use_rsi50 else True) & wr_up_recent
-        sellCond = (c<kijun) & (spanA<spanB) & (rsi14<50 if use_rsi50 else True) & wr_dn_recent
+    wr_up = cross_recent(crossover(wr, pd.Series(-80, index=wr.index)), 14)
+    wr_dn = cross_recent(crossunder(wr, pd.Series(-20, index=wr.index)), 14)
 
-    buy_now = bool(buyCond.iloc[-1])
+    if mode == "Strict":
+        buyCond  = aboveCloud & bullTK & (rsi14>50) & wr_up & (vo>0)
+        sellCond = belowCloud & bearTK & (rsi14<50) & wr_dn & (vo<0)
+    else:
+        buyCond  = (c>kijun) & (spanA>spanB) & ((rsi14>50) if use_rsi50 else True) & wr_up
+        sellCond = (c<kijun) & (spanA<spanB) & ((rsi14<50) if use_rsi50 else True) & wr_dn
+
+    buy_now  = bool(buyCond.iloc[-1])
     sell_now = bool(sellCond.iloc[-1])
-    buy_new = buy_now and not bool(buyCond.iloc[-2])
+    buy_new  = buy_now  and not bool(buyCond.iloc[-2])
     sell_new = sell_now and not bool(sellCond.iloc[-2])
 
     results.append({
-        "Symbol": symbol,
+        "Symbol": sym,
         "Yahoo": ysym,
         "Buy": buy_now,
         "Sell": sell_now,
@@ -242,12 +256,13 @@ for symbol in tsx_df["Symbol"]:
 
 res = pd.DataFrame(results)
 
+# ==============================
+# Affichage
+# ==============================
 show = st.selectbox("Afficher", ["Tous","Buy","Sell","BuyNew"])
-if show=="Buy":
-    res = res[res["Buy"]]
-elif show=="Sell":
-    res = res[res["Sell"]]
-elif show=="BuyNew":
-    res = res[res["BuyNew"]]
+
+if show=="Buy":    res = res[res["Buy"]]
+if show=="Sell":   res = res[res["Sell"]]
+if show=="BuyNew": res = res[res["BuyNew"]]
 
 st.dataframe(res, use_container_width=True)
