@@ -134,10 +134,31 @@ def compute_signals(df):
     upper_cloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
     lower_cloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
 
-    above_cloud = close > upper_cloud
-    below_cloud = close < lower_cloud
-    bull_tk = tenkan > kijun
-    bear_tk = tenkan < kijun
+   # Rendre les index compatibles (important pour éviter l'erreur)
+df2 = pd.DataFrame({
+    "close": close,
+    "tenkan": tenkan,
+    "kijun": kijun,
+    "spanA": spanA,
+    "spanB": spanB
+}).dropna()
+
+if len(df2) < 2:
+    return None
+
+close = df2["close"]
+tenkan = df2["tenkan"]
+kijun = df2["kijun"]
+spanA = df2["spanA"]
+spanB = df2["spanB"]
+
+upper_cloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
+lower_cloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
+
+above_cloud = close > upper_cloud
+below_cloud = close < lower_cloud
+bull_tk = tenkan > kijun
+bear_tk = tenkan < kijun
 
     # Extraction scalaires sécurisés
     try:
