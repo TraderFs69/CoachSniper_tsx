@@ -224,8 +224,17 @@ for sym in tsx_df["Symbol"]:
     r = rsi(c).iloc[-1]
     w = wr(h, l, c).iloc[-1]
 
-    if np.isnan(r) or np.isnan(w):
-        continue
+   import math
+
+# sécurisation des scalaires
+try:
+    r = float(r)
+    w = float(w)
+except:
+    continue
+
+if math.isnan(r) or math.isnan(w):
+    continue
 
     buy  = bool(above[-1] and bullTK[-1] and r > 50 and w > -80)
     sell = bool(below[-1] and bearTK[-1] and r < 50 and w < -20)
