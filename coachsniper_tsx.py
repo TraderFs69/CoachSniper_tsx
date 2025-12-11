@@ -205,21 +205,28 @@ for sym in tsx_df["Symbol"]:
     h, l, c = ha["High"], ha["Low"], ha["Close"]
     v = ha["Volume"]
 
-    # === Ichimoku with index alignment FIXED ===
-    tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
+# === Ichimoku (with full forced alignment FIX) ===
+tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
 
-    c, tenkan = c.align(tenkan, join="inner")
-    c, kijun  = c.align(kijun, join="inner")
-    c, spanA  = c.align(spanA, join="inner")
-    c, spanB  = c.align(spanB, join="inner")
+# Align Ichimoku components with Close index
+c, tenkan = c.align(tenkan, join="inner")
+c, kijun  = c.align(kijun, join="inner")
+c, spanA  = c.align(spanA, join="inner")
+c, spanB  = c.align(spanB, join="inner")
 
-    upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
-    lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
+# Compute cloud
+upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
+lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
 
-    aboveCloud = c > upperCloud
-    belowCloud = c < lowerCloud
-    bullTK = tenkan > kijun
-    bearTK = tenkan < kijun
+# ❗ FINAL FIX: Align clouds with Close (to avoid ValueError)
+c, upperCloud = c.align(upperCloud, join="inner")
+c, lowerCloud = c.align(lowerCloud, join="inner")
+
+# Signals
+aboveCloud = c > upperCloud
+belowCloud = c < lowerCloud
+bullTK = tenkan > kijun
+bearTK = tenkan < kijun
 
     rsi14 = rsi_wilder(c)
     wr = williams_r(h, l, c)
