@@ -205,48 +205,59 @@ for sym in tsx_df["Symbol"]:
     h, l, c = ha["High"], ha["Low"], ha["Close"]
     v = ha["Volume"]
 
-# === Ichimoku components ===
-tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
+   # === Ichimoku components ===
+    tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
 
-# Force Series format
-c = pd.Series(c, index=c.index)
-tenkan = pd.Series(tenkan, index=tenkan.index)
-kijun = pd.Series(kijun, index=kijun.index)
-spanA = pd.Series(spanA, index=spanA.index)
-spanB = pd.Series(spanB, index=spanB.index)
+    # Force Series format
+    c = pd.Series(c, index=c.index)
+    tenkan = pd.Series(tenkan, index=tenkan.index)
+    kijun = pd.Series(kijun, index=kijun.index)
+    spanA = pd.Series(spanA, index=spanA.index)
+    spanB = pd.Series(spanB, index=spanB.index)
 
-# Align all on common index
-idx = c.index.intersection(tenkan.index).intersection(kijun.index).intersection(spanA.index).intersection(spanB.index)
+    # Align all on common index
+    idx = (
+        c.index
+        .intersection(tenkan.index)
+        .intersection(kijun.index)
+        .intersection(spanA.index)
+        .intersection(spanB.index)
+    )
 
-c = c.loc[idx]
-tenkan = tenkan.loc[idx]
-kijun = kijun.loc[idx]
-spanA = spanA.loc[idx]
-spanB = spanB.loc[idx]
+    c = c.loc[idx]
+    tenkan = tenkan.loc[idx]
+    kijun = kijun.loc[idx]
+    spanA = spanA.loc[idx]
+    spanB = spanB.loc[idx]
 
-# Cloud
-upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
-lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
+    # Cloud
+    upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
+    lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
 
-# Align clouds as well
-upperCloud = upperCloud.loc[idx]
-lowerCloud = lowerCloud.loc[idx]
+    # Align clouds as well
+    upperCloud = upperCloud.loc[idx]
+    lowerCloud = lowerCloud.loc[idx]
 
-# Drop NaN (MANDATORY)
-valid_idx = c.dropna().index.intersection(upperCloud.dropna().index)
+    # Drop NaN (MANDATORY)
+    valid_idx = (
+        c.dropna().index
+        .intersection(upperCloud.dropna().index)
+        .intersection(lowerCloud.dropna().index)
+        .intersection(tenkan.dropna().index)
+        .intersection(kijun.dropna().index)
+    )
 
-c = c.loc[valid_idx]
-upperCloud = upperCloud.loc[valid_idx]
-lowerCloud = lowerCloud.loc[valid_idx]
-tenkan = tenkan.loc[valid_idx]
-kijun = kijun.loc[valid_idx]
+    c = c.loc[valid_idx]
+    upperCloud = upperCloud.loc[valid_idx]
+    lowerCloud = lowerCloud.loc[valid_idx]
+    tenkan = tenkan.loc[valid_idx]
+    kijun = kijun.loc[valid_idx]
 
-# === FINAL COMPARISONS (will NEVER throw ValueError) ===
-aboveCloud = c.values > upperCloud.values
-belowCloud = c.values < lowerCloud.values
-bullTK = tenkan.values > kijun.values
-bearTK = tenkan.values < kijun.values
-
+    # === FINAL COMPARISONS (safe with numpy arrays) ===
+    aboveCloud = c.values > upperCloud.values
+    belowCloud = c.values < lowerCloud.values
+    bullTK = tenkan.values > kijun.values
+    bearTK = tenkan.values < kijun.values
     rsi14 = rsi_wilder(c)
     wr = williams_r(h, l, c)
     vo = volume_oscillator(v)
