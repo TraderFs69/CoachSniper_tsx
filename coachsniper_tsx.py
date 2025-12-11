@@ -3,96 +3,99 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="Coach Sniper – TSX", layout="wide")
-st.title("📈 Coach Sniper – TSX Scanner")
+st.set_page_config(page_title="Coach Sniper – TSX Scanner", layout="wide")
+st.title("📈 Coach Sniper – TSX Composite Scanner")
 
-# ---------------------------------------------------------
-# STRATÉGIE MODE (GLOBAL)
-# ---------------------------------------------------------
-st.sidebar.header("Stratégie")
+
+# ==========================================================
+# STRATÉGIE (GLOBAL SELECTOR)
+# ==========================================================
+st.sidebar.header("Stratégie de Trading")
 strategy_mode = st.sidebar.selectbox(
     "Mode stratégie",
     ["Strict", "Balanced", "Balanced Permissif"]
 )
 
-# ---------------------------------------------------------
-# LECTURE DU FICHIER TSX
-# ---------------------------------------------------------
+
+# ==========================================================
+# LECTURE DU FICHIER TSX ET ADAPTATION POUR YAHOO
+# ==========================================================
 @st.cache_data
 def load_tsx_list():
     df = pd.read_excel("tsxcomposite_constituents.xlsx")
     df.columns = df.columns.str.lower()
 
-    # Chercher colonne de symboles
-    symbol_col = None
+    # identifier colonne symbol
+    col = None
     for c in ["symbol", "ticker", "security"]:
         if c in df.columns:
-            symbol_col = c
+            col = c
             break
 
-    if symbol_col is None:
-        st.error("❌ Impossible de trouver une colonne 'Symbol', 'Ticker' ou 'Security'.")
+    if col is None:
+        st.error("❌ Aucun champ 'Symbol', 'Ticker' ou 'Security' trouvé dans le fichier.")
         st.stop()
 
-    df["symbol"] = df[symbol_col].astype(str).str.strip()
+    df["symbol"] = df[col].astype(str).str.strip()
 
-    # Conversion vers Yahoo
-    def convert_to_yahoo(symbol):
+    # Conversion Yahoo
+    def to_yahoo(symbol):
         s = symbol.upper().replace(" ", "")
 
-        # UNITÉS : X.UN → X-UN.TO
+        # Fonds / unités : X.UN → X-UN.TO
         if ".UN" in s:
-            b = s.replace(".UN", "")
-            return f"{b}-UN.TO"
+            base = s.replace(".UN", "")
+            return f"{base}-UN.TO"
 
-        # CLASSES : CTC.A → CTC-A.TO
+        # Classes d'action : CTC.A → CTC-A.TO
         if "." in s:
             a, b = s.split(".")
             return f"{a}-{b}.TO"
 
-        # Normal : RY, SHOP → RY.TO
+        # Sinon standard : RY → RY.TO
         return f"{s}.TO"
 
-    df["yahoo"] = df["symbol"].apply(convert_to_yahoo)
+    df["yahoo"] = df["symbol"].apply(to_yahoo)
     return df
+
 
 tsx_df = load_tsx_list()
 tickers = tsx_df["yahoo"].tolist()
 
-st.write(f"Tickers TSX chargés : {len(tickers)}")
+st.write(f"📌 {len(tickers)} tickers TSX détectés")
 
 
-# ---------------------------------------------------------
-# FONCTIONS INDICATEURS
-# ---------------------------------------------------------
-def ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+# ==========================================================
+# INDICATEURS TECHNIQUES
+# ==========================================================
+def ema(s, length):
+    return s.ewm(span=length, adjust=False).mean()
 
-def rsi(series, length=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+def rsi(close, length=14):
+    d = close.diff()
+    gain = d.where(d > 0, 0)
+    loss = -d.where(d < 0, 0)
     avg_gain = gain.ewm(alpha=1/length).mean()
     avg_loss = loss.ewm(alpha=1/length).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - 100/(1+rs)
+    return (100 - 100/(1+rs))
 
 def williams_r(high, low, close, length=14):
-    highest = high.rolling(length).max()
-    lowest  = low.rolling(length).min()
-    return -100 * (highest - close) / (highest - lowest)
+    hh = high.rolling(length).max()
+    ll = low.rolling(length).min()
+    return -100 * (hh - close) / (hh - ll)
 
 def ichimoku(high, low):
     tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2
-    kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2
-    spanA = ((tenkan + kijun) / 2).shift(26)
-    spanB = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
+    kijun  = (high.rolling(26).max() + low.rolling(26).min()) / 2
+    spanA  = ((tenkan + kijun) / 2).shift(26)
+    spanB  = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
     return tenkan, kijun, spanA, spanB
 
 
-# ---------------------------------------------------------
-# TÉLÉCHARGEMENT YAHOO
-# ---------------------------------------------------------
+# ==========================================================
+# YAHOO FINANCE DOWNLOAD
+# ==========================================================
 def get_history(ticker):
     try:
         df = yf.download(ticker, period="2y", interval="1d", progress=False)
@@ -100,18 +103,21 @@ def get_history(ticker):
             return None
 
         df = df.rename(columns=str.title)
-        for col in ["Open","High","Low","Close","Volume"]:
-            if col not in df.columns:
+
+        # vérifier
+        for c in ["Open","High","Low","Close","Volume"]:
+            if c not in df.columns:
                 return None
 
         return df
-    except:
+
+    except Exception:
         return None
 
 
-# ---------------------------------------------------------
-# COMPUTE SIGNALS — VERSION ANTI-FAIL + MODE PERMISSIF
-# ---------------------------------------------------------
+# ==========================================================
+# SIGNALS (VERSION ANTI-FAIL + 3 MODES)
+# ==========================================================
 def compute_signals(df):
 
     if df is None or len(df) < 120:
@@ -126,41 +132,35 @@ def compute_signals(df):
     # Ichimoku
     tenkan, kijun, spanA, spanB = ichimoku(high, low)
 
-    # Alignement anti-fail
+    # alignement anti-fail
     for x in [tenkan, kijun, spanA, spanB]:
+        x.reindex(close.index)
         x.fillna(method="bfill", inplace=True)
         x.fillna(method="ffill", inplace=True)
 
-    # RSI & WR
-    r = rsi(close)
-    wr = williams_r(high, low, close)
+    # RSI, Williams R & Volume
+    r  = rsi(close).reindex(close.index).fillna(50)
+    wr = williams_r(high, low, close).reindex(close.index).fillna(-50)
+    vo = (ema(df["Volume"], 5) - ema(df["Volume"], 20)).reindex(close.index).fillna(0)
 
-    # Volume oscillator
-    vo = ema(df["Volume"], 5) - ema(df["Volume"], 20)
-
-    # Remplissage NaN pour éviter crash
-    r = r.fillna(50)
-    wr = wr.fillna(-50)
-    vo = vo.fillna(0)
-
-    # ==========================================================
+    # ======================================================
     # MODE STRICT
-    # ==========================================================
+    # ======================================================
     if strategy_mode == "Strict":
-        buy = (close > spanA) & (tenkan > kijun) & (r > 50) & (wr > -80)
+        buy  = (close > spanA) & (tenkan > kijun) & (r > 50) & (wr > -80)
         sell = (close < spanB) & (tenkan < kijun) & (r < 50) & (wr < -20)
 
-    # ==========================================================
+    # ======================================================
     # MODE BALANCED (standard)
-    # ==========================================================
+    # ======================================================
     elif strategy_mode == "Balanced":
-        buy = (close > kijun) & (r > 48) & (wr > -85)
+        buy  = (close > kijun) & (r > 48) & (wr > -85)
         sell = (close < kijun) & (r < 52) & (wr < -15)
 
-    # ==========================================================
-    # MODE BALANCED PERMISSIF (NOUVEAU)
-    # ==========================================================
-    else:  # Balanced Permissif
+    # ======================================================
+    # MODE BALANCED PERMISSIF
+    # ======================================================
+    else:
         trend_long  = (close > kijun) & ((tenkan >= kijun) | (spanA > spanB))
         trend_short = (close < kijun) & ((tenkan <= kijun) | (spanA < spanB))
 
@@ -173,33 +173,51 @@ def compute_signals(df):
         vo_long  = vo > -5
         vo_short = vo < 5
 
-        buy = trend_long & rsi_long & wr_long & vo_long
+        buy  = trend_long  & rsi_long  & wr_long  & vo_long
         sell = trend_short & rsi_short & wr_short & vo_short
 
-    # Nouveaux signaux
-    buy_new = buy & (~buy.shift(1).fillna(False))
+    # nouveaux signaux
+    buy_new  = buy & (~buy.shift(1).fillna(False))
     sell_new = sell & (~sell.shift(1).fillna(False))
+
+    # ======================================================
+    # PATCH ANTI-FAIL — convert Series → bool python
+    # ======================================================
+    def extract_bool(x):
+        try:
+            return bool(x.item())
+        except:
+            try:
+                return bool(x)
+            except:
+                return False
+
+    last_buy      = extract_bool(buy.iloc[-1])
+    last_sell     = extract_bool(sell.iloc[-1])
+    last_buy_new  = extract_bool(buy_new.iloc[-1])
+    last_sell_new = extract_bool(sell_new.iloc[-1])
 
     return {
         "Close": float(close.iloc[-1]),
-        "Buy": bool(buy.iloc[-1]),
-        "Sell": bool(sell.iloc[-1]),
-        "BuyNew": bool(buy_new.iloc[-1]),
-        "SellNew": bool(sell_new.iloc[-1]),
+        "Buy": last_buy,
+        "Sell": last_sell,
+        "BuyNew": last_buy_new,
+        "SellNew": last_sell_new,
         "RSI": float(r.iloc[-1]),
         "WR": float(wr.iloc[-1])
     }
 
 
-# ---------------------------------------------------------
-# LANCEMENT DU SCAN
-# ---------------------------------------------------------
-st.subheader("🔍 Résultats du scan TSX")
+# ==========================================================
+# SCAN UI
+# ==========================================================
+st.subheader("🔍 Résultats du Scan TSX")
 
 results = []
 
 if st.button("🚀 Lancer le scan"):
     for i, ticker in enumerate(tickers):
+
         st.write(f"{i+1}/{len(tickers)} — {ticker}")
 
         df = get_history(ticker)
