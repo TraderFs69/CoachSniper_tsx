@@ -205,28 +205,47 @@ for sym in tsx_df["Symbol"]:
     h, l, c = ha["High"], ha["Low"], ha["Close"]
     v = ha["Volume"]
 
-# === Ichimoku (with full forced alignment FIX) ===
+# === Ichimoku components ===
 tenkan, kijun, spanA, spanB = ichimoku_components(h, l)
 
-# Align Ichimoku components with Close index
-c, tenkan = c.align(tenkan, join="inner")
-c, kijun  = c.align(kijun, join="inner")
-c, spanA  = c.align(spanA, join="inner")
-c, spanB  = c.align(spanB, join="inner")
+# Force Series format
+c = pd.Series(c, index=c.index)
+tenkan = pd.Series(tenkan, index=tenkan.index)
+kijun = pd.Series(kijun, index=kijun.index)
+spanA = pd.Series(spanA, index=spanA.index)
+spanB = pd.Series(spanB, index=spanB.index)
 
-# Compute cloud
+# Align all on common index
+idx = c.index.intersection(tenkan.index).intersection(kijun.index).intersection(spanA.index).intersection(spanB.index)
+
+c = c.loc[idx]
+tenkan = tenkan.loc[idx]
+kijun = kijun.loc[idx]
+spanA = spanA.loc[idx]
+spanB = spanB.loc[idx]
+
+# Cloud
 upperCloud = pd.concat([spanA, spanB], axis=1).max(axis=1)
 lowerCloud = pd.concat([spanA, spanB], axis=1).min(axis=1)
 
-# ❗ FINAL FIX: Align clouds with Close (to avoid ValueError)
-c, upperCloud = c.align(upperCloud, join="inner")
-c, lowerCloud = c.align(lowerCloud, join="inner")
+# Align clouds as well
+upperCloud = upperCloud.loc[idx]
+lowerCloud = lowerCloud.loc[idx]
 
-# Signals
-aboveCloud = c > upperCloud
-belowCloud = c < lowerCloud
-bullTK = tenkan > kijun
-bearTK = tenkan < kijun
+# Drop NaN (MANDATORY)
+valid_idx = c.dropna().index.intersection(upperCloud.dropna().index)
+
+c = c.loc[valid_idx]
+upperCloud = upperCloud.loc[valid_idx]
+lowerCloud = lowerCloud.loc[valid_idx]
+tenkan = tenkan.loc[valid_idx]
+kijun = kijun.loc[valid_idx]
+
+# === FINAL COMPARISONS (will NEVER throw ValueError) ===
+aboveCloud = c.values > upperCloud.values
+belowCloud = c.values < lowerCloud.values
+bullTK = tenkan.values > kijun.values
+bearTK = tenkan.values < kijun.values
 
     rsi14 = rsi_wilder(c)
     wr = williams_r(h, l, c)
